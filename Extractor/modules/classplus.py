@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import time
 import asyncio
 import aiohttp
 from datetime import datetime
@@ -14,12 +15,8 @@ API_URL = "https://api.classplusapp.com"
 INDIA_TZ = pytz.timezone("Asia/Kolkata")
 
 
-def get_current_time_str() -> str:
-    return datetime.now(INDIA_TZ).strftime("%d %b %Y • %I:%M %p")
-
-
 def extract_media_url(item: dict) -> str:
-    """Extracts media/document URL across all known Classplus JSON response structures."""
+    """Extracts media/document URL across all Classplus response variants."""
     direct_keys = [
         "url",
         "encryptedUrl",
@@ -102,10 +99,10 @@ async def register_fallback(
 async def classplus_txt(client: Client, message):
     details = await client.ask(
         message.chat.id,
-        "<blockquote><b>✦ C L A S S P L U S  •  E X T R A C T O R ✦</b>\n\n"
-        "Send your credentials in this format:\n"
+        "<blockquote><b>✦ CLASSPLUS EXTRACTION PRO ✦</b>\n\n"
+        "Send your login details in this format:\n"
         "<code>ORG_CODE*Mobile</code>\n\n"
-        "<i>Or paste your direct access token directly.</i></blockquote>"
+        "<i>Or send your direct access token.</i></blockquote>"
     )
     user_input = details.text.strip()
 
@@ -130,7 +127,7 @@ async def classplus_txt(client: Client, message):
                 # Step 1: Fetch Org Details
                 async with session.get(f"{API_URL}/v2/orgs/{org_code}", headers=headers) as resp:
                     if resp.status != 200:
-                        return await message.reply("<blockquote><b>✗ Error:</b> Invalid Organization Code.</blockquote>")
+                        return await message.reply("<blockquote><b>❌ Error:</b> Invalid Organization Code.</blockquote>")
                     org_data = await resp.json()
                     org_id = org_data["data"]["orgId"]
                     org_name = org_data["data"]["orgName"]
@@ -147,20 +144,20 @@ async def classplus_txt(client: Client, message):
 
                 async with session.post(f"{API_URL}/v2/otp/generate", json=otp_payload, headers=headers) as resp:
                     if resp.status != 200:
-                        return await message.reply("<blockquote><b>✗ Error:</b> OTP generation failed. Check your mobile number.</blockquote>")
+                        return await message.reply("<blockquote><b>❌ Error:</b> OTP generation failed. Check your mobile number.</blockquote>")
                     otp_data = await resp.json()
                     session_id = otp_data["data"]["sessionId"]
 
                 # Step 3: Ask User for OTP
                 user_otp_msg = await client.ask(
                     message.chat.id,
-                    "<blockquote><b>🔐 Verification Required</b>\n\n"
-                    "Enter the OTP sent to your registered number:</blockquote>",
+                    "<blockquote><b>📱 OTP Verification</b>\n\n"
+                    "OTP sent to your mobile number. Enter the OTP to continue:</blockquote>",
                     timeout=300
                 )
 
                 if not user_otp_msg.text.strip().isdigit():
-                    return await message.reply("<blockquote><b>✗ Error:</b> OTP must contain numbers only.</blockquote>")
+                    return await message.reply("<blockquote><b>❌ Error:</b> OTP must contain digits only.</blockquote>")
 
                 otp = user_otp_msg.text.strip()
                 fingerprint_id = uuid.uuid4().hex
@@ -185,28 +182,28 @@ async def classplus_txt(client: Client, message):
                         )
 
                 if not token:
-                    return await message.reply("<blockquote><b>✗ Error:</b> Verification failed. Invalid OTP or session expired.</blockquote>")
+                    return await message.reply("<blockquote><b>❌ Error:</b> Verification failed. Invalid OTP or session expired.</blockquote>")
 
                 await message.reply_text(
-                    "<blockquote><b>✓ Authentication Successful</b>\n\n"
-                    "<b>Token:</b>\n"
+                    "<blockquote><b>✅ Login Successful!</b>\n\n"
+                    "<b>Your Access Token:</b>\n"
                     f"<code>{token}</code></blockquote>"
                 )
                 await client.send_message(
                     PREMIUM_LOGS,
-                    "<blockquote><b>✦ New Login Session</b>\n\n"
+                    "<blockquote><b>✅ New Login Alert</b>\n\n"
                     f"<b>App:</b> <code>{org_name}</code>\n"
                     f"<b>Token:</b> <code>{token}</code></blockquote>"
                 )
 
             except Exception as e:
-                return await message.reply(f"<blockquote><b>✗ Exception:</b> <code>{str(e)}</code></blockquote>")
+                return await message.reply(f"<blockquote><b>❌ Error:</b> <code>{str(e)}</code></blockquote>")
 
         elif len(user_input) > 20:
             token = user_input
-            await client.send_message(PREMIUM_LOGS, f"<blockquote><b>✦ Direct Token Session</b>\n<code>{token}</code></blockquote>")
+            await client.send_message(PREMIUM_LOGS, f"<blockquote><b>🔑 Direct Token Session:</b>\n<code>{token}</code></blockquote>")
         else:
-            return await message.reply("<blockquote><b>✗ Error:</b> Invalid input format provided.</blockquote>")
+            return await message.reply("<blockquote><b>❌ Error:</b> Invalid input format provided.</blockquote>")
 
         # Step 5: Fetch Course Batches
         auth_headers = {
@@ -219,12 +216,12 @@ async def classplus_txt(client: Client, message):
 
         async with session.get(f"{API_URL}/v2/courses?tabCategoryId=1", headers=auth_headers) as resp:
             if resp.status != 200:
-                return await message.reply("<blockquote><b>✗ Error:</b> Unable to fetch courses with this session.</blockquote>")
+                return await message.reply("<blockquote><b>❌ Error:</b> Invalid token or failed to fetch courses.</blockquote>")
             res_data = await resp.json()
             courses = res_data.get("data", {}).get("courses", [])
 
         if not courses:
-            return await message.reply("<blockquote><b>✗ Notice:</b> No enrolled batches/courses found.</blockquote>")
+            return await message.reply("<blockquote><b>❌ Notice:</b> No courses or batches found on this account.</blockquote>")
 
         if not org_name:
             shareable_link = courses[0].get("shareableLink", "")
@@ -235,8 +232,7 @@ async def classplus_txt(client: Client, message):
             else:
                 org_name = "Classplus"
 
-        courses_dict = {str(c["id"]): c["name"] for c in courses}
-        await prompt_and_extract_batches(client, message, session, auth_headers, courses_dict, org_name)
+        await prompt_and_extract_batches(client, message, session, auth_headers, courses, org_name)
 
 
 async def prompt_and_extract_batches(
@@ -244,36 +240,46 @@ async def prompt_and_extract_batches(
     message,
     session: aiohttp.ClientSession,
     auth_headers: dict,
-    courses: dict,
+    courses: list,
     org_name: str
 ):
-    text = "<b>Available Batches</b>\n\n"
-    course_list = []
-    for idx, (course_id, course_name) in enumerate(courses.items(), start=1):
-        text += f"<code>{idx:02d}.</code> {course_name}\n"
-        course_list.append((idx, course_id, course_name))
+    text = "📚 <b>Available Batches</b>\n\n"
+    for idx, course in enumerate(courses, start=1):
+        text += f"<code>{idx:02d}.</code> {course.get('name')}\n"
 
     await client.send_message(PREMIUM_LOGS, f"<blockquote>{text}</blockquote>")
 
     selected_input = await client.ask(
         message.chat.id,
-        f"<blockquote>{text}\n<b>Send the batch number to begin extraction:</b></blockquote>",
+        f"<blockquote>{text}\n<b>Send the batch index number to download:</b></blockquote>",
         timeout=180
     )
 
     if not selected_input.text.strip().isdigit():
-        return await message.reply("<blockquote><b>✗ Error:</b> Please provide a valid index number.</blockquote>")
+        return await message.reply("<blockquote><b>❌ Error:</b> Please enter a valid number.</blockquote>")
 
     selected_idx = int(selected_input.text.strip())
-    if not (1 <= selected_idx <= len(course_list)):
-        return await message.reply("<blockquote><b>✗ Error:</b> Batch index out of range.</blockquote>")
+    if not (1 <= selected_idx <= len(courses)):
+        return await message.reply("<blockquote><b>❌ Error:</b> Index out of range.</blockquote>")
 
-    _, selected_course_id, selected_course_name = course_list[selected_idx - 1]
+    selected_course = courses[selected_idx - 1]
+    selected_course_id = str(selected_course.get("id"))
+    selected_course_name = selected_course.get("name", "Unknown Course")
+
+    price = selected_course.get("finalPrice") or selected_course.get("price") or "11"
+    thumbnail_url = (
+        selected_course.get("thumbnailUrl")
+        or selected_course.get("imageUrl")
+        or selected_course.get("previewImageUrl")
+        or "https://classplusapp.com"
+    )
 
     status_msg = await message.reply(
-        "<blockquote>⚡ <b>Extracting course index structure...</b>\n"
-        f"<b>Target:</b> <code>{selected_course_name}</code></blockquote>"
+        "<blockquote>🔄 <b>Processing Course Extraction...</b>\n"
+        f"└─ Target: <code>{selected_course_name}</code></blockquote>"
     )
+
+    start_time = time.time()
 
     # Recursive Course Extractor with Full Pagination
     async def process_course_contents(course_id: str, folder_id: int = 0, folder_path: str = "") -> list:
@@ -363,7 +369,7 @@ async def prompt_and_extract_batches(
     extracted_data.extend(live_videos)
 
     if not extracted_data:
-        return await status_msg.edit_text("<blockquote><b>✗ Notice:</b> No media files or documents found in this batch.</blockquote>")
+        return await status_msg.edit_text("<blockquote><b>❌ Notice:</b> No content found inside this batch.</blockquote>")
 
     clean_name = re.sub(r'[\t:/+#|@*.\\]', '', selected_course_name).replace('_', ' ')
     file_path = f"{clean_name}.txt"
@@ -371,29 +377,39 @@ async def prompt_and_extract_batches(
     with open(file_path, "w", encoding="utf-8") as f:
         f.writelines(extracted_data)
 
-    video_count = sum(1 for line in extracted_data if any(x in line.lower() for x in [".mp4", ".m3u8", "video", "master.m3u8"]))
+    # Statistics Calculation
+    time_taken = f"{int(time.time() - start_time)}s"
+    current_date_time = datetime.now(INDIA_TZ).strftime("%d-%m-%Y %H:%M:%S")
+
+    live_count = len(live_videos)
+    video_count = sum(
+        1 for line in extracted_data 
+        if any(x in line.lower() for x in [".mp4", ".m3u8", "video", "master.m3u8"]) and "[LIVE]" not in line
+    )
     pdf_count = sum(1 for line in extracted_data if any(x in line.lower() for x in [".pdf", ".doc", ".epub"]))
+    test_count = sum(1 for line in extracted_data if any(x in line.lower() for x in ["test", "quiz", "assessment"]))
     total_links = len(extracted_data)
-    other_count = total_links - (video_count + pdf_count)
 
-    bot_user = await client.get_me()
-
+    # Exact Matching Screenshot Report Caption
     caption = (
+        "✅ <b>Classplus Extraction Report</b> ✅\n\n"
+        f"📚 <b>Course Name:</b> <i>{selected_course_name}</i>\n"
         "<blockquote>"
-        "╭──  <b>COURSE EXTRACTION REPORT</b>  ──╮\n"
-        f"│ 🏷️ <b>Platform  :</b> <code>{org_name}</code>\n"
-        f"│ 📦 <b>Batch     :</b> <code>{selected_course_name}</code>\n"
-        f"│ 🕒 <b>Timestamp :</b> <code>{get_current_time_str()}</code>\n"
-        "├──────────────────────────\n"
-        "│ 📊 <b>Resource Breakdown :</b>\n"
-        f"│   ├ 🎥 <b>Videos   :</b> <code>{video_count}</code>\n"
-        f"│   ├ 📄 <b>PDFs     :</b> <code>{pdf_count}</code>\n"
-        f"│   ├ 📁 <b>Others   :</b> <code>{other_count}</code>\n"
-        f"│   └ 🔗 <b>Total    :</b> <code>{total_links}</code>\n"
-        "╰──────────────────────────╯\n"
-        f"⚡ <b>Engine :</b> @{bot_user.username}\n"
-        f"<code>{BOT_TEXT}</code>"
-        "</blockquote>"
+        f"• 📱 <b>App Name:</b> {org_name}\n"
+        f"• 🆔 <b>Batch ID:</b> {selected_course_id}\n"
+        f"• 💰 <b>Price:</b> ₹{price}\n"
+        "• 🛒 <b>Purchased:</b> ✅ Yes\n"
+        f"• 🖼️ <b>Thumbnail:</b> <a href=\"{thumbnail_url}\">Click Here to View</a>\n"
+        f"• ⌛ <b>Time Taken:</b> {time_taken}\n"
+        f"• 📅 <b>Date & Time:</b> {current_date_time}"
+        "</blockquote>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>Content Summary</b>\n"
+        "<blockquote>"
+        f"🔗 <b>Total:</b> {total_links} │ 🎬 <b>Videos:</b> {video_count}\n"
+        f"📄 <b>PDFs:</b> {pdf_count} │ 🔴 <b>Live:</b> {live_count} │ 🧩 <b>Tests:</b> {test_count}"
+        "</blockquote>\n"
+        "━━━━━━━━━━━━━━━━━━━━"
     )
 
     await client.send_document(message.chat.id, file_path, caption=caption)
