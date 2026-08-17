@@ -99,7 +99,7 @@ async def register_fallback(
 
 
 @app.on_message(filters.command(["cp"]))
-async def classplus_handler(client: Client, message):
+async def classplus_txt(client: Client, message):
     details = await client.ask(
         message.chat.id,
         "<blockquote><b>✦ C L A S S P L U S  •  E X T R A C T O R ✦</b>\n\n"
@@ -155,7 +155,7 @@ async def classplus_handler(client: Client, message):
                 user_otp_msg = await client.ask(
                     message.chat.id,
                     "<blockquote><b>🔐 Verification Required</b>\n\n"
-                    "Enter the 4/6-digit OTP sent to your registered number:</blockquote>",
+                    "Enter the OTP sent to your registered number:</blockquote>",
                     timeout=300
                 )
 
@@ -378,7 +378,6 @@ async def prompt_and_extract_batches(
 
     bot_user = await client.get_me()
 
-    # Aesthetic Telegram Blockquote Card Caption
     caption = (
         "<blockquote>"
         "╭──  <b>COURSE EXTRACTION REPORT</b>  ──╮\n"
