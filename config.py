@@ -3,39 +3,33 @@ from os import getenv
 
 
 
-# ------------------------------------------------
+# -----------------------------------------------
+
+# --- Telegram API Credentials ---
 API_ID = int(os.environ.get("API_ID", "30574823"))
-# ------------------------------------------------
-API_HASH = os.environ.get("API_HASH","2815bb996f64421716844acaf2d51493")
-# ------------------------------------------------
+API_HASH = os.environ.get("API_HASH", "2815bb996f64421716844acaf2d51493")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8802388796:AAEueYIXHBUxUKpD4hOx-5ed9e1JAqXq4BA")
-# ------------------------------------------------
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "@OnexExtractorGbot")
 BOT_TEXT = "Extractor Bot"
-# ------------------------------------------------
+ADMIN_BOT_USERNAME = os.environ.get("ADMIN_BOT_USERNAME", "OnexExtractorGbot")
+
+# --- User & Channel IDs ---
 OWNER_ID = int(os.environ.get("OWNER_ID", "8549673687"))
-# ------------------------------------------------
-# //LOG CHANNEL ID 
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1004476834501"))
-
-# //FORCE_CHANNEL_ID
-CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1004476834501")) 
-# -----------------------------------------------
-MONGO_URL = os.environ.get("mongodb+srv://ONeX_db_user:onexvartikuu142062@cluster0.ga3zort.mongodb.net/?appName=Cluster0")
-# -----------------------------------------------
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1004476834501"))       # Log Channel
+CHANNEL_ID2 = int(os.environ.get("CHANNEL_ID2", "-1004476834501"))     # Force Sub Channel
 PREMIUM_LOGS = int(os.environ.get("PREMIUM_LOGS", "-1004476834501"))
-# -----------------------------------------------
-join = '<a href="https://t.me/ITSGOLU0">✳️ Bᴀᴄᴋᴜᴘ</a>'
-# -----------------------------------------------
-UNSPLASH_ACCESS_KEY = 'RabDRmuXXBobanmwwbvpP5LwoG4J8ox34y5Sstz-9jk'
-# -----------------------------------------------
-UNSPLASH_QUERY = 'animal baby'
-# -----------------------------------------------
-ADMIN_BOT_USERNAME = "OnexExtractorGbot" #without @
 
+# --- Database (Fixed) ---
+MONGO_URL = os.environ.get(
+    "MONGO_URL", 
+    "mongodb+srv://ONeX_db_user:onexvartikuu142062@cluster0.ga3zort.mongodb.net/?appName=Cluster0"
+)
+
+# --- External APIs & Assets ---
+UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "RabDRmuXXBobanmwwbvpP5LwoG4J8ox34y5Sstz-9jk")
+UNSPLASH_QUERY = os.environ.get("UNSPLASH_QUERY", "animal baby")
 THUMB_URL = os.environ.get("THUMB_URL", "https://i.ibb.co/DPCmWSKV/1000003297-3.jpg")
-
-
+join = '<a href="https://t.me/ITSGOLU0">✳️ Bᴀᴄᴋᴜᴘ</a>'
 
 
 # # Bot configuration
