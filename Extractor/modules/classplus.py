@@ -1,483 +1,405 @@
-import requests
-import json
-import random
-import uuid
-import time
-import asyncio
-import io
-import aiohttp
-from pyrogram import Client, filters
 import os
-from Extractor import app
-import cloudscraper
-import concurrent.futures
 import re
-from config import PREMIUM_LOGS, join,BOT_TEXT
+import uuid
+import asyncio
+import aiohttp
 from datetime import datetime
 import pytz
+from pyrogram import Client, filters
 
-india_timezone = pytz.timezone('Asia/Kolkata')
-current_time = datetime.now(india_timezone)
-time_new = current_time.strftime("%d-%m-%Y %I:%M %p")
+from Extractor import app
+from config import PREMIUM_LOGS, join, BOT_TEXT
+
+API_URL = "https://api.classplusapp.com"
+INDIA_TZ = pytz.timezone("Asia/Kolkata")
 
 
-apiurl = "https://api.classplusapp.com"
-s = cloudscraper.create_scraper() 
+def get_current_time_str() -> str:
+    return datetime.now(INDIA_TZ).strftime("%d %b %Y • %I:%M %p")
+
+
+def extract_media_url(item: dict) -> str:
+    """Extracts media/document URL across all known Classplus JSON response structures."""
+    direct_keys = [
+        "url",
+        "encryptedUrl",
+        "downloadUrl",
+        "documentUrl",
+        "streamUrl",
+        "videoUrl",
+        "hlsUrl",
+        "rawUrl"
+    ]
+    for key in direct_keys:
+        val = item.get(key)
+        if val and isinstance(val, str) and val.strip().startswith("http"):
+            return val.strip()
+
+    resources = item.get("resources")
+    if isinstance(resources, list) and resources:
+        for res in resources:
+            if isinstance(res, dict):
+                for key in direct_keys:
+                    val = res.get(key)
+                    if val and isinstance(val, str) and val.strip().startswith("http"):
+                        return val.strip()
+    elif isinstance(resources, dict):
+        for key in direct_keys:
+            val = resources.get(key)
+            if val and isinstance(val, str) and val.strip().startswith("http"):
+                return val.strip()
+
+    for nested_obj_key in ["media", "attachment", "file"]:
+        nested_obj = item.get(nested_obj_key)
+        if isinstance(nested_obj, dict):
+            for key in direct_keys:
+                val = nested_obj.get(key)
+                if val and isinstance(val, str) and val.strip().startswith("http"):
+                    return val.strip()
+
+    return ""
+
+
+async def register_fallback(
+    session: aiohttp.ClientSession,
+    headers: dict,
+    org_id: str,
+    org_name: str,
+    mobile: str,
+    otp: str,
+    session_id: str,
+    fingerprint_id: str
+) -> str | None:
+    """Helper to handle registration when login returns 201/409."""
+    email = f"{uuid.uuid4().hex}@gmail.com"
+    payload = {
+        "contact": {
+            "email": email,
+            "countryExt": "91",
+            "mobile": mobile
+        },
+        "fingerprintId": fingerprint_id,
+        "name": "Student",
+        "orgId": org_id,
+        "orgName": org_name,
+        "otp": otp,
+        "sessionId": session_id,
+        "type": 1,
+        "viaEmail": 0,
+        "viaSms": 1
+    }
+    try:
+        async with session.post(f"{API_URL}/v2/users/register", json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("data", {}).get("token")
+    except Exception as e:
+        print(f"Registration error: {e}")
+    return None
+
 
 @app.on_message(filters.command(["cp"]))
-async def classplus_txt(app, message):
-    # Step 1: Ask for details
-    details = await app.ask(message.chat.id, 
-        "🔹 <b>UG EXTRACTOR PRO</b> 🔹\n\n"
-        "Send **ID & Password** in this format:\n"
+async def classplus_handler(client: Client, message):
+    details = await client.ask(
+        message.chat.id,
+        "<blockquote><b>✦ C L A S S P L U S  •  E X T R A C T O R ✦</b>\n\n"
+        "Send your credentials in this format:\n"
         "<code>ORG_CODE*Mobile</code>\n\n"
-        "Example:\n"
-        "- <code>ABCD*9876543210</code>\n"
-        "- <code>eyJhbGciOiJIUzI1NiIsInR5cCI6...</code>"
+        "<i>Or paste your direct access token directly.</i></blockquote>"
     )
     user_input = details.text.strip()
 
-    if "*" in user_input:
-        try:
-            org_code, mobile = user_input.split("*")
-            
-            device_id = str(uuid.uuid4()).replace('-', '')
-            headers = {
-    "Accept": "application/json, text/plain, */*",
-    "region": "IN",
-    "accept-language": "en",
-    "Content-Type": "application/json;charset=utf-8",
-    "Api-Version": "51",
-    "device-id": device_id
-            }
-            
-            # Step 2: Fetch Organization Details
-            org_response = s.get(f"{apiurl}/v2/orgs/{org_code}", headers=headers).json()
-            org_id = org_response["data"]["orgId"]
-            org_name = org_response["data"]["orgName"]
+    token = None
+    org_name = None
 
-            # Step 3: Generate OTP
-            otp_payload = {
-                'countryExt': '91',
-                'orgCode': org_name,
-                'viaSms': '1',
-                'mobile': mobile,
-                'orgId': org_id,
-                'otpCount': 0
-            }
-             
-            otp_response = s.post(f"{apiurl}/v2/otp/generate", json=otp_payload, headers=headers)
-            print(otp_response)
+    async with aiohttp.ClientSession() as session:
+        if "*" in user_input:
+            try:
+                org_code, mobile = user_input.split("*", 1)
+                device_id = uuid.uuid4().hex
 
-            if otp_response.status_code == 200:
-                otp_data = otp_response.json()
-                session_id = otp_data['data']['sessionId']
-                print(session_id)
+                headers = {
+                    "Accept": "application/json, text/plain, */*",
+                    "region": "IN",
+                    "accept-language": "en",
+                    "Content-Type": "application/json;charset=utf-8",
+                    "Api-Version": "51",
+                    "device-id": device_id
+                }
 
-                # Step 4: Ask for OTP
-                user_otp = await app.ask(message.chat.id, 
-                    "📱 <b>OTP Verification</b>\n\n"
-                    "OTP has been sent to your mobile number.\n"
-                    "Please enter the OTP to continue.", 
+                # Step 1: Fetch Org Details
+                async with session.get(f"{API_URL}/v2/orgs/{org_code}", headers=headers) as resp:
+                    if resp.status != 200:
+                        return await message.reply("<blockquote><b>✗ Error:</b> Invalid Organization Code.</blockquote>")
+                    org_data = await resp.json()
+                    org_id = org_data["data"]["orgId"]
+                    org_name = org_data["data"]["orgName"]
+
+                # Step 2: Generate OTP
+                otp_payload = {
+                    "countryExt": "91",
+                    "orgCode": org_name,
+                    "viaSms": "1",
+                    "mobile": mobile,
+                    "orgId": org_id,
+                    "otpCount": 0
+                }
+
+                async with session.post(f"{API_URL}/v2/otp/generate", json=otp_payload, headers=headers) as resp:
+                    if resp.status != 200:
+                        return await message.reply("<blockquote><b>✗ Error:</b> OTP generation failed. Check your mobile number.</blockquote>")
+                    otp_data = await resp.json()
+                    session_id = otp_data["data"]["sessionId"]
+
+                # Step 3: Ask User for OTP
+                user_otp_msg = await client.ask(
+                    message.chat.id,
+                    "<blockquote><b>🔐 Verification Required</b>\n\n"
+                    "Enter the 4/6-digit OTP sent to your registered number:</blockquote>",
                     timeout=300
                 )
 
-                if user_otp.text.isdigit():
-                    otp = user_otp.text.strip()
-                    print(otp)
+                if not user_otp_msg.text.strip().isdigit():
+                    return await message.reply("<blockquote><b>✗ Error:</b> OTP must contain numbers only.</blockquote>")
 
-                    # Step 5: Verify OTP
-                    fingerprint_id = str(uuid.uuid4()).replace('-', '')
-                    verify_payload = {
-                        "otp": otp,
-                        "countryExt": "91",
-                        "sessionId": session_id,
-                        "orgId": org_id,
-                        "fingerprintId": fingerprint_id,
-                        "mobile": mobile
-                    }
-                    
-                    verify_response = s.post(f"{apiurl}/v2/users/verify", json=verify_payload, headers=headers)
-                    
+                otp = user_otp_msg.text.strip()
+                fingerprint_id = uuid.uuid4().hex
 
-                    if verify_response.status_code == 200:
-                        verify_data = verify_response.json()
+                # Step 4: Verify OTP
+                verify_payload = {
+                    "otp": otp,
+                    "countryExt": "91",
+                    "sessionId": session_id,
+                    "orgId": org_id,
+                    "fingerprintId": fingerprint_id,
+                    "mobile": mobile
+                }
 
-                        if verify_data['status'] == 'success':
-                            # OTP Verified - Proceed with Login
-                            token = verify_data['data']['token']
-                            s.headers['x-access-token'] = token
-                            await message.reply_text(
-                                "✅ <b>Login Successful!</b>\n\n"
-                                "🔑 <b>Your Access Token:</b>\n"
-                                f"<code>{token}</code>"
-                            )
-                            await app.send_message(PREMIUM_LOGS, 
-                                "✅ <b>New Login Alert</b>\n\n"
-                                "🔑 <b>Access Token:</b>\n"
-                                f"<code>{token}</code>"
-                            )
-                            
+                async with session.post(f"{API_URL}/v2/users/verify", json=verify_payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        verify_data = await resp.json()
+                        token = verify_data.get("data", {}).get("token")
+                    elif resp.status in (201, 409):
+                        token = await register_fallback(
+                            session, headers, org_id, org_name, mobile, otp, session_id, fingerprint_id
+                        )
 
-                            headers = {
-                                 'x-access-token': token,
-                                 'user-agent': 'Mobile-Android',
-                                 'app-version': '1.4.65.3',
-                                 'api-version': '29',
-                                 'device-id': '39F093FF35F201D9'
-                             }
-                            response = s.get(f"{apiurl}/v2/courses?tabCategoryId=1", headers=headers)  # Corrected indentation here
-                            if response.status_code == 200:
-                                courses = response.json()["data"]["courses"]
-                                s.session_data = {"token": token, "courses": {course["id"]: course["name"] for course in courses}}
-                                await fetch_batches(app, message, org_name)
-                            else:
-                                await message.reply("NO BATCH FOUND ")
+                if not token:
+                    return await message.reply("<blockquote><b>✗ Error:</b> Verification failed. Invalid OTP or session expired.</blockquote>")
 
-
-                    elif verify_response.status_code == 201:
-                        email = str(uuid.uuid4()).replace('-', '') + "@gmail.com"
-                        abcdefg_payload = {
-                            "contact": {
-                                "email": email,
-                                "countryExt": "91",
-                                "mobile": mobile
-                            },
-                            "fingerprintId": fingerprint_id,
-                            "name": "name",
-                            "orgId": org_id,
-                            "orgName": org_name,
-                            "otp": otp,
-                            "sessionId": session_id,
-                            "type": 1,
-                            "viaEmail": 0,
-                            "viaSms": 1
-                        }
-    
-                        abcdefg_response = s.post("https://api.classplusapp.com/v2/users/register", json=abcdefg_payload, headers=headers)
-                        
-
-                        if abcdefg_response.status_code == 200:
-                            abcdefg_data = abcdefg_response.json()
-                            token = abcdefg_data['data']['token']
-                            s.headers['x-access-token'] = token
-                        
-                            await message.reply_text(f"<blockquote> Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                            await app.send_message(PREMIUM_LOGS, f"<blockquote>Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                    
-                    elif verify_response.status_code == 409:
-
-                        email = str(uuid.uuid4()).replace('-', '') + "@gmail.com"
-                        abcdefg_payload = {
-                            "contact": {
-                                "email": email,
-                                "countryExt": "91",
-                                "mobile": mobile
-                            },
-                            "fingerprintId": fingerprint_id,
-                            "name": "name",
-                            "orgId": org_id,
-                            "orgName": org_name,
-                            "otp": otp,
-                            "sessionId": session_id,
-                            "type": 1,
-                            "viaEmail": 0,
-                            "viaSms": 1
-                        }
-    
-                        abcdefg_response = s.post("https://api.classplusapp.com/v2/users/register", json=abcdefg_payload, headers=headers)
-                        
-                        
-
-                        if abcdefg_response.status_code == 200:
-                            abcdefg_data = abcdefg_response.json()
-                            token = abcdefg_data['data']['token']
-                            s.headers['x-access-token'] = token
-                        
-                            await message.reply_text(f"<blockquote> Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                            await app.send_message(PREMIUM_LOGS, f"<blockquote>Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                            
-
-                            headers = {
-                                 'x-access-token': token,
-                                 'user-agent': 'Mobile-Android',
-                                 'app-version': '1.4.65.3',
-                                 'api-version': '29',
-                                 'device-id': '39F093FF35F201D9'
-                             }
-                            response = s.get(f"{apiurl}/v2/courses?tabCategoryId=1", headers=headers)  # Corrected indentation here
-                            if response.status_code == 200:
-                                courses = response.json()["data"]["courses"]
-                                s.session_data = {"token": token, "courses": {course["id"]: course["name"] for course in courses}}
-                                await fetch_batches(app, message, org_name)
-                            
-                            else:
-                                await message.reply("Failed to verify OTP. Please try again.")
-                        else:
-                            await message.reply("NO BATCH FOUND OR ENTERED OTP IS NOT CORRECT .")
-                    else:
-                        email = str(uuid.uuid4()).replace('-', '') + "@gmail.com"
-                        abcdefg_payload = {
-                            "contact": {
-                                "email": email,
-                                "countryExt": "91",
-                                "mobile": mobile
-                            },
-                            "fingerprintId": fingerprint_id,
-                            "name": "name",
-                            "orgId": org_id,
-                            "orgName": org_name,
-                            "otp": otp,
-                            "sessionId": session_id,
-                            "type": 1,
-                            "viaEmail": 0,
-                            "viaSms": 1
-                        }
-    
-                        abcdefg_response = s.post("https://api.classplusapp.com/v2/users/register", json=abcdefg_payload, headers=headers)
-                        
-                        
-
-                        if abcdefg_response.status_code == 200:
-                            abcdefg_data = abcdefg_response.json()
-                            token = abcdefg_data['data']['token']
-                            s.headers['x-access-token'] = token
-                        
-                            await message.reply_text(f"<blockquote> Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                            await app.send_message(PREMIUM_LOGS, f"<blockquote>Login successful! Your access token for future use:\n\n`{token}` </blockquote>")
-                            
-
-                            headers = {
-                                 'x-access-token': token,
-                                 'user-agent': 'Mobile-Android',
-                                 'app-version': '1.4.65.3',
-                                 'api-version': '29',
-                                 'device-id': '39F093FF35F201D9'
-                             }
-                            response = s.get(f"{apiurl}/v2/courses?tabCategoryId=1", headers=headers)  # Corrected indentation here
-                            if response.status_code == 200:
-                                courses = response.json()["data"]["courses"]
-                                s.session_data = {"token": token, "courses": {course["id"]: course["name"] for course in courses}}
-                                await fetch_batches(app, message, org_name)
-                            else:
-                                await message.reply("NO BATCH FOUND ")
-                        else:
-                            await message.reply("wrong OTP ")
-                else:
-                    await message.reply("Failed to generate OTP. Please check your details and try again.")
-
-        except Exception as e:
-            await message.reply(f"Error: {str(e)}")
-
-    elif len(user_input) > 20:
-        a = f"CLASSPLUS LOGIN SUCCESSFUL FOR\n\n<blockquote>`{user_input}`</blockquote>"
-        await app.send_message(PREMIUM_LOGS, a)
-        headers = {
-            'x-access-token': user_input,
-            'user-agent': 'Mobile-Android',
-            'app-version': '1.4.65.3',
-            'api-version': '29',
-            'device-id': '39F093FF35F201D9'
-        }
-        response = s.get(f"{apiurl}/v2/courses?tabCategoryId=1", headers=headers)
-        if response.status_code == 200:
-            courses = response.json()["data"]["courses"]
-    
-            s.session_data = {
-                "token": user_input,
-                "courses": {course["id"]: course["name"] for course in courses}
-            }
-
-            org_name = None
-
-            for course in courses:
-                shareable_link = course["shareableLink"]
-    
-                if "courses.store" in shareable_link:
-  
-                    new_data = shareable_link.split('.')[0].split('//')[-1]
-                    org_response = s.get(f"https://api.classplusapp.com/v2/orgs/{new_data}", headers=headers)
-        
-                    if org_response.status_code == 200:
-                        org_data = org_response.json().get("data", {})
-                        org_id = org_data.get("orgId")
-                        org_name = org_data.get("orgName")
-                else:
-                    org_name = shareable_link.split('//')[1].split('.')[1]
-
-                print(f"Org Name: {org_name}")
-
-            await fetch_batches(app, message, org_name)
-        else:
-            await message.reply("Invalid token. Please try again.")
-    else:
-        await message.reply("Invalid input. Please send details in the correct format.")
-
-
-
-async def fetch_batches(app, message, org_name):
-    session_data = s.session_data
-    
-    if "courses" in session_data:
-        courses = session_data["courses"]
-        
-        
-      
-        text = "📚 <b>Available Batches</b>\n\n"
-        course_list = []
-        for idx, (course_id, course_name) in enumerate(courses.items(), start=1):
-            text += f"{idx}. <code>{course_name}</code>\n"
-            course_list.append((idx, course_id, course_name))
-        
-        await app.send_message(PREMIUM_LOGS, f"<blockquote>{text}</blockquote>")
-        selected_index = await app.ask(
-            message.chat.id, 
-            f"{text}\n"
-            "Send the index number of the batch to download.", 
-            timeout=180
-        )
-        
-        if selected_index.text.isdigit():
-            selected_idx = int(selected_index.text.strip())
-            
-            if 1 <= selected_idx <= len(course_list):
-                selected_course_id = course_list[selected_idx - 1][1]
-                selected_course_name = course_list[selected_idx - 1][2]
-                
-                await app.send_message(
-                    message.chat.id,
-                    "🔄 <b>Processing Course</b>\n"
-                    f"└─ Current: <code>{selected_course_name}</code>"
+                await message.reply_text(
+                    "<blockquote><b>✓ Authentication Successful</b>\n\n"
+                    "<b>Token:</b>\n"
+                    f"<code>{token}</code></blockquote>"
                 )
-                await extract_batch(app, message, org_name, selected_course_id)
+                await client.send_message(
+                    PREMIUM_LOGS,
+                    "<blockquote><b>✦ New Login Session</b>\n\n"
+                    f"<b>App:</b> <code>{org_name}</code>\n"
+                    f"<b>Token:</b> <code>{token}</code></blockquote>"
+                )
+
+            except Exception as e:
+                return await message.reply(f"<blockquote><b>✗ Exception:</b> <code>{str(e)}</code></blockquote>")
+
+        elif len(user_input) > 20:
+            token = user_input
+            await client.send_message(PREMIUM_LOGS, f"<blockquote><b>✦ Direct Token Session</b>\n<code>{token}</code></blockquote>")
+        else:
+            return await message.reply("<blockquote><b>✗ Error:</b> Invalid input format provided.</blockquote>")
+
+        # Step 5: Fetch Course Batches
+        auth_headers = {
+            "x-access-token": token,
+            "user-agent": "Mobile-Android",
+            "app-version": "1.4.65.3",
+            "api-version": "29",
+            "device-id": "39F093FF35F201D9"
+        }
+
+        async with session.get(f"{API_URL}/v2/courses?tabCategoryId=1", headers=auth_headers) as resp:
+            if resp.status != 200:
+                return await message.reply("<blockquote><b>✗ Error:</b> Unable to fetch courses with this session.</blockquote>")
+            res_data = await resp.json()
+            courses = res_data.get("data", {}).get("courses", [])
+
+        if not courses:
+            return await message.reply("<blockquote><b>✗ Notice:</b> No enrolled batches/courses found.</blockquote>")
+
+        if not org_name:
+            shareable_link = courses[0].get("shareableLink", "")
+            if "courses.store" in shareable_link:
+                org_name = shareable_link.split(".")[0].split("//")[-1]
+            elif "//" in shareable_link and len(shareable_link.split("//")[1].split(".")) > 1:
+                org_name = shareable_link.split("//")[1].split(".")[1]
             else:
-                await app.send_message(
-                    message.chat.id,
-                    "❌ <b>Invalid Input!</b>\n\n"
-                    "Please send a valid index number from the list."
-                )
-        else:
-            await app.send_message(
-                message.chat.id,
-                "❌ <b>Invalid Input!</b>\n\n"
-                "Please send a valid index number."
-            )
-              
-    else:
-        await app.send_message(
-            message.chat.id,
-            "❌ <b>No Batches Found</b>\n\n"
-            "Please check your credentials and try again."
-        )
+                org_name = "Classplus"
+
+        courses_dict = {str(c["id"]): c["name"] for c in courses}
+        await prompt_and_extract_batches(client, message, session, auth_headers, courses_dict, org_name)
 
 
-async def extract_batch(app, message, org_name, batch_id):
-    session_data = s.session_data
-    
-    if "token" in session_data:
-        batch_name = session_data["courses"][batch_id]
-        headers = {
-            'x-access-token': session_data["token"],
-            'user-agent': 'Mobile-Android',
-            'app-version': '1.4.65.3',
-            'api-version': '29',
-            'device-id': '39F093FF35F201D9'
-        }
+async def prompt_and_extract_batches(
+    client: Client,
+    message,
+    session: aiohttp.ClientSession,
+    auth_headers: dict,
+    courses: dict,
+    org_name: str
+):
+    text = "<b>Available Batches</b>\n\n"
+    course_list = []
+    for idx, (course_id, course_name) in enumerate(courses.items(), start=1):
+        text += f"<code>{idx:02d}.</code> {course_name}\n"
+        course_list.append((idx, course_id, course_name))
 
-# inside your extract_batch function, only replacing process_course_contents
+    await client.send_message(PREMIUM_LOGS, f"<blockquote>{text}</blockquote>")
 
-        async def process_course_contents(course_id, folder_id=0, folder_path=""):
-            """Fetch and process course content recursively."""
-            result = []
-            url = f'{apiurl}/v2/course/content/get?courseId={course_id}&folderId={folder_id}'
+    selected_input = await client.ask(
+        message.chat.id,
+        f"<blockquote>{text}\n<b>Send the batch number to begin extraction:</b></blockquote>",
+        timeout=180
+    )
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers) as resp:
-                    course_data = await resp.json()
-                    course_data = course_data["data"]["courseContent"]
-                    
+    if not selected_input.text.strip().isdigit():
+        return await message.reply("<blockquote><b>✗ Error:</b> Please provide a valid index number.</blockquote>")
+
+    selected_idx = int(selected_input.text.strip())
+    if not (1 <= selected_idx <= len(course_list)):
+        return await message.reply("<blockquote><b>✗ Error:</b> Batch index out of range.</blockquote>")
+
+    _, selected_course_id, selected_course_name = course_list[selected_idx - 1]
+
+    status_msg = await message.reply(
+        "<blockquote>⚡ <b>Extracting course index structure...</b>\n"
+        f"<b>Target:</b> <code>{selected_course_name}</code></blockquote>"
+    )
+
+    # Recursive Course Extractor with Full Pagination
+    async def process_course_contents(course_id: str, folder_id: int = 0, folder_path: str = "") -> list:
+        result = []
+        limit = 100
+        offset = 0
+
+        while True:
+            url = f"{API_URL}/v2/course/content/get?courseId={course_id}&folderId={folder_id}&limit={limit}&offset={offset}"
+            try:
+                async with session.get(url, headers=auth_headers) as resp:
+                    if resp.status != 200:
+                        break
+                    data = await resp.json()
+                    course_data = data.get("data", {}).get("courseContent", [])
+            except Exception as e:
+                print(f"Error reading folder {folder_id}: {e}")
+                break
+
+            if not course_data:
+                break
+
             tasks = []
             for item in course_data:
-                content_type = str(item['contentType'])
-                sub_id = item['id']
-                sub_name = item['name']
+                content_type = str(item.get("contentType", ""))
+                sub_id = item.get("id")
+                sub_name = item.get("name", "Untitled Content").replace(":", " -")
 
-                if content_type in ("2", "3"):  # Video or PDF
-                    url = item["url"]
-                    full_name = f"{folder_path}{sub_name}: {url}\n"
-                    result.append(full_name)
-                elif content_type == "1":  # Folder
-                 new_folder_path = f"{folder_path}{sub_name} - "
-                 tasks.append(process_course_contents(course_id, sub_id, new_folder_path))
+                if content_type == "1":
+                    new_folder_path = f"{folder_path}{sub_name} - "
+                    tasks.append(process_course_contents(course_id, sub_id, new_folder_path))
+                else:
+                    media_url = extract_media_url(item)
+                    if media_url:
+                        result.append(f"{folder_path}{sub_name}: {media_url}\n")
 
-            sub_contents = await asyncio.gather(*tasks)
-            for sub_content in sub_contents:
-                result.extend(sub_content)
+            if tasks:
+                sub_contents = await asyncio.gather(*tasks)
+                for sub_list in sub_contents:
+                    result.extend(sub_list)
 
-            return result
+            if len(course_data) < limit:
+                break
 
-        async def fetch_live_videos(course_id):
-            """Fetch live videos from the API."""
-            outputs = []
-            async with aiohttp.ClientSession() as session:
-                try:
-                    url = f"{apiurl}/v2/course/live/list/videos?type=2&entityId={course_id}&limit=9999&offset=0"
-                    async with session.get(url, headers=headers) as response:
-                        j = await response.json()
-                        if "data" in j and "list" in j["data"]:
-                            for video in j["data"]["list"]:
-                                name = video.get("name", "Unknown Video")
-                                video_url = video.get("url", "")
-                                if video_url:
-                                    outputs.append(f"{name}: {video_url}\n")
-                except Exception as e:
-                    print(f"Error fetching live videos: {e}")
+            offset += limit
 
-            return outputs
+        return result
 
-        async def write_to_file(extracted_data):
-            """Write data to a text file asynchronously."""
-            invalid_chars = '\t:/+#|@*.'
-            clean_name = ''.join(char for char in batch_name if char not in invalid_chars)
-            clean_name = clean_name.replace('_', ' ')
-            file_path = f"{clean_name}.txt"
-            
-            with open(file_path, "w", encoding='utf-8') as file:
-                file.write(''.join(extracted_data))  
-            return file_path
+    # Live Videos Extractor with Pagination
+    async def fetch_live_videos(course_id: str) -> list:
+        outputs = []
+        limit = 100
+        offset = 0
 
-        extracted_data, live_videos = await asyncio.gather(
-            process_course_contents(batch_id),
-            fetch_live_videos(batch_id)
-        )
+        while True:
+            url = f"{API_URL}/v2/course/live/list/videos?type=2&entityId={course_id}&limit={limit}&offset={offset}"
+            try:
+                async with session.get(url, headers=auth_headers) as resp:
+                    if resp.status != 200:
+                        break
+                    j = await resp.json()
+                    video_list = j.get("data", {}).get("list", [])
+            except Exception as e:
+                print(f"Error fetching live videos: {e}")
+                break
 
-        extracted_data.extend(live_videos)
-        file_path = await write_to_file(extracted_data)
+            if not video_list:
+                break
 
-        # Count different types of content
-        video_count = sum(1 for line in extracted_data if "Video" in line or ".mp4" in line)
-        pdf_count = sum(1 for line in extracted_data if ".pdf" in line)
-        total_links = len(extracted_data)
-        other_count = total_links - (video_count + pdf_count)
-        
-        caption = (
-            f"🎓 <b>COURSE EXTRACTED</b> 🎓\n\n"
-            f"📱 <b>APP:</b> {org_name}\n"
-            f"📚 <b>BATCH:</b> {batch_name}\n"
-            f"📅 <b>DATE:</b> {time_new} IST\n\n"
-            f"📊 <b>CONTENT STATS</b>\n"
-            f"├─ 📁 Total Links: {total_links}\n"
-            f"├─ 🎬 Videos: {video_count}\n"
-            f"├─ 📄 PDFs: {pdf_count}\n"
-            f"└─ 📦 Others: {other_count}\n\n"
-            f"🚀 <b>Extracted by</b>: @{(await app.get_me()).username}\n\n"
-            f"<code>╾───• {BOT_TEXT} •───╼</code>"
-        )
+            for video in video_list:
+                name = video.get("name", "Live Video").replace(":", " -")
+                video_url = extract_media_url(video)
+                if video_url:
+                    outputs.append(f"[LIVE] {name}: {video_url}\n")
 
-        await app.send_document(message.chat.id, file_path, caption=caption)
-        await app.send_document(PREMIUM_LOGS, file_path, caption=caption)
+            if len(video_list) < limit:
+                break
 
+            offset += limit
+
+        return outputs
+
+    extracted_data, live_videos = await asyncio.gather(
+        process_course_contents(selected_course_id),
+        fetch_live_videos(selected_course_id)
+    )
+    extracted_data.extend(live_videos)
+
+    if not extracted_data:
+        return await status_msg.edit_text("<blockquote><b>✗ Notice:</b> No media files or documents found in this batch.</blockquote>")
+
+    clean_name = re.sub(r'[\t:/+#|@*.\\]', '', selected_course_name).replace('_', ' ')
+    file_path = f"{clean_name}.txt"
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.writelines(extracted_data)
+
+    video_count = sum(1 for line in extracted_data if any(x in line.lower() for x in [".mp4", ".m3u8", "video", "master.m3u8"]))
+    pdf_count = sum(1 for line in extracted_data if any(x in line.lower() for x in [".pdf", ".doc", ".epub"]))
+    total_links = len(extracted_data)
+    other_count = total_links - (video_count + pdf_count)
+
+    bot_user = await client.get_me()
+
+    # Aesthetic Telegram Blockquote Card Caption
+    caption = (
+        "<blockquote>"
+        "╭──  <b>COURSE EXTRACTION REPORT</b>  ──╮\n"
+        f"│ 🏷️ <b>Platform  :</b> <code>{org_name}</code>\n"
+        f"│ 📦 <b>Batch     :</b> <code>{selected_course_name}</code>\n"
+        f"│ 🕒 <b>Timestamp :</b> <code>{get_current_time_str()}</code>\n"
+        "├──────────────────────────\n"
+        "│ 📊 <b>Resource Breakdown :</b>\n"
+        f"│   ├ 🎥 <b>Videos   :</b> <code>{video_count}</code>\n"
+        f"│   ├ 📄 <b>PDFs     :</b> <code>{pdf_count}</code>\n"
+        f"│   ├ 📁 <b>Others   :</b> <code>{other_count}</code>\n"
+        f"│   └ 🔗 <b>Total    :</b> <code>{total_links}</code>\n"
+        "╰──────────────────────────╯\n"
+        f"⚡ <b>Engine :</b> @{bot_user.username}\n"
+        f"<code>{BOT_TEXT}</code>"
+        "</blockquote>"
+    )
+
+    await client.send_document(message.chat.id, file_path, caption=caption)
+    await client.send_document(PREMIUM_LOGS, file_path, caption=caption)
+
+    if os.path.exists(file_path):
         os.remove(file_path)
-            
-
-    
+    await status_msg.delete()
