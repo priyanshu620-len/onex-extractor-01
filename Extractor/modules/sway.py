@@ -188,19 +188,29 @@ async def cb_extract(client, callback: CallbackQuery):
         for cls in classes:
             title = cls.get("title", "Untitled").strip()
             
-            mp4s = cls.get("mp4Recordings", [])
+           mp4s = cls.get("mp4Recordings", [])
+            selected_video_url = ""
+
             if mp4s:
+                # 1. Look for 720p specifically
                 for mp4 in mp4s:
-                    quality = mp4.get("quality", "default")
-                    url = mp4.get("url", "").strip()
-                    if url:
-                        output.write(f"{title} ({quality}):{url}\n")
-                        total_videos += 1
-            else:
-                hls = cls.get("class_link", "").strip()
-                if hls:
-                    output.write(f"{title}:{hls}\n")
-                    total_videos += 1
+                    q = str(mp4.get("quality", "")).lower()
+                    if "720" in q:
+                        selected_video_url = mp4.get("url", "").strip()
+                        break
+                
+                # 2. If 720p isn't found, pick the highest/last available MP4
+                if not selected_video_url and len(mp4s) > 0:
+                    selected_video_url = mp4s[-1].get("url", "").strip()
+            
+            # 3. Fallback to class_link (HLS) if no mp4Recordings exist
+            if not selected_video_url:
+                selected_video_url = cls.get("class_link", "").strip()
+
+            # Write only ONE entry per lecture
+            if selected_video_url:
+                output.write(f"{title}:{selected_video_url}\n")
+                total_videos += 1
 
             for pdf in cls.get("classPdf", []):
                 pdf_url = pdf.get("url", "").strip()
