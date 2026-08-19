@@ -3,7 +3,7 @@ import json
 import random
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from pyrogram import filters
+from pyrogram import filters, Client
 from Extractor import app
 from config import OWNER_ID
 from Extractor.core import script
@@ -26,6 +26,7 @@ from Extractor.modules.getappxotp import send_otpp
 from Extractor.modules.findapi import findapis_extract
 from Extractor.modules.rg_vikramjeet import rgvikram_txt
 from Extractor.modules.adda import adda_command_handler
+from Extractor.modules.sway import cmd_selectionway
         
 from Extractor.modules.freecp import *
 from Extractor.modules.freeappx import *
@@ -67,7 +68,8 @@ custom_button = [[
                   InlineKeyboardButton("⚡ Pᴡ ⚡", callback_data="pwwp"),
                   InlineKeyboardButton("🔮 Aᴘᴘx 🔮", callback_data="appxwp"),
                 ],[
-                  InlineKeyboardButton("🎯 CʟᴀssPʟᴜs 🎯", callback_data="cpwp")
+                  InlineKeyboardButton("🎯 CʟᴀssPʟᴜs 🎯", callback_data="cpwp"),
+                  InlineKeyboardButton("🌐 Sᴇʟᴇᴄᴛɪᴏɴ Wᴀʏ 🌐", callback_data="swaywp")
                 ],[
                   InlineKeyboardButton("𝐁 𝐀 𝐂 𝐊", callback_data="modes_")
                 ]]
@@ -406,6 +408,10 @@ async def start(_, message):
             reply_markup=buttons
         )
 
+@app.on_message(filters.command(["sway", "selectionway"]) & filters.private)
+async def sway_command_handler(client, message):
+    await cmd_selectionway(client, message)
+
 @app.on_callback_query(filters.regex("^appxlist$"))
 async def show_alphabet(client, query):
     keyboard = get_alphabet_keyboard()
@@ -582,6 +588,14 @@ async def cpwp_callback(client, callback_query):
     except Exception as e:
         print(f"Error in cpwp_callback: {e}")
         await callback_query.answer("An error occurred", show_alert=True)
+
+@app.on_callback_query(filters.regex("^swaywp$"))
+async def swaywp_callback(client, callback_query):
+    try:
+        await callback_query.answer()
+        await cmd_selectionway(client, callback_query.message)
+    except Exception as e:
+        await callback_query.message.reply_text(f"Error: {str(e)}")
 
 @app.on_callback_query(filters.regex("^cw$"))
 async def career_will_callback(app: Client, callback_query: CallbackQuery):
