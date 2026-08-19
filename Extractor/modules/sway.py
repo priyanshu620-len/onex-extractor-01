@@ -1,7 +1,8 @@
-import asyncio
 import io
 import re
-import aiohttp
+import requests
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pyrogram import filters
 from pyrogram.types import (
     Message,
@@ -11,7 +12,8 @@ from pyrogram.types import (
 )
 from Extractor import app
 
-# --- Config & Headers ---
+THREAD_POOL = ThreadPoolExecutor(max_workers=50)
+
 API_BASE = "https://gdgoenkaratia.com/api"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -55,51 +57,51 @@ def build_batch_keyboard(chat_id: int, page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-async def fetch_batches(session: aiohttp.ClientSession, user_id: str = ""):
-    url = f"{API_BASE}/courses/active?userId={user_id}"
+def _sync_fetch_batches():
+    url = f"{API_BASE}/courses/active?userId="
     try:
-        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("state") == 200:
-                    return data.get("data", [])
+        resp = requests.get(url, headers=HEADERS, timeout=25)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("state") == 200:
+                return data.get("data", [])
     except Exception:
         pass
     return []
 
 
-async def fetch_topics(session: aiohttp.ClientSession, course_id: str, user_id: str = ""):
-    url = f"{API_BASE}/topic-and-section?courseId={course_id}&userId={user_id}"
+def _sync_fetch_topics(course_id):
+    url = f"{API_BASE}/topic-and-section?courseId={course_id}&userId="
     try:
-        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=25)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("state") == 200:
-                    return data.get("data", {}).get("topics", [])
+        resp = requests.get(url, headers=HEADERS, timeout=25)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("state") == 200:
+                return data.get("data", {}).get("topics", [])
     except Exception:
         pass
     return []
 
 
-async def fetch_classes(session: aiohttp.ClientSession, topic_id: str, course_id: str, user_id: str = ""):
-    url = f"{API_BASE}/topics/{topic_id}/classes?courseId={course_id}&userId={user_id}"
+def _sync_fetch_classes(topic_id, course_id):
+    url = f"{API_BASE}/topics/{topic_id}/classes?courseId={course_id}&userId="
     try:
-        async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if data.get("state") == 200:
-                    return data.get("data", {}).get("classes", [])
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("state") == 200:
+                return data.get("data", {}).get("classes", [])
     except Exception:
         pass
     return []
 
 
-# Entry function called either via command or from start.py callback
+# Callable function from start.py or direct command
 async def cmd_selectionway(client, message: Message):
     status_msg = await message.reply_text("⚡ **Fetching SelectionWay batches...**")
     
-    async with aiohttp.ClientSession() as session:
-        batches = await fetch_batches(session)
+    loop = asyncio.get_running_loop()
+    batches = await loop.run_in_executor(THREAD_POOL, _sync_fetch_batches)
 
     if not batches:
         await status_msg.edit_text("❌ **Failed to fetch batches or no active batches found.**")
@@ -115,7 +117,6 @@ async def cmd_selectionway(client, message: Message):
     )
 
 
-# Standalone /sway and /selectionway command listener
 @app.on_message(filters.command(["sway", "selectionway"]) & filters.private)
 async def sway_msg_handler(client, message: Message):
     await cmd_selectionway(client, message)
@@ -142,7 +143,7 @@ async def cb_extract(client, callback: CallbackQuery):
     user_batches = BATCH_CACHE.get(callback.message.chat.id, [])
     
     if not user_batches or idx >= len(user_batches):
-        await callback.answer("Session expired. Please send /sway again.", show_alert=True)
+        await callback.answer("Session expired. Send /sway again.", show_alert=True)
         return
 
     batch = user_batches[idx]
@@ -155,63 +156,60 @@ async def cb_extract(client, callback: CallbackQuery):
         f"⏳ **Extracting:** `{batch_title}`\n\n_Fetching topics & class links..._"
     )
 
+    loop = asyncio.get_running_loop()
+    topics = await loop.run_in_executor(THREAD_POOL, _sync_fetch_topics, course_id)
+
+    if not topics:
+        await status_msg.edit_text("❌ **No topics found for this course.**")
+        return
+
     output = io.StringIO()
     total_videos = 0
     total_pdfs = 0
 
-    async with aiohttp.ClientSession() as session:
-        topics = await fetch_topics(session, course_id)
+    for t_idx, topic in enumerate(topics, 1):
+        topic_id = topic.get("topicId")
+        topic_name = topic.get("topicName", f"Topic {t_idx}")
+        
+        if t_idx % 2 == 0 or t_idx == len(topics):
+            try:
+                await status_msg.edit_text(
+                    f"⏳ **Extracting:** `{batch_title}`\n"
+                    f"📁 **Topic** `{t_idx}/{len(topics)}`: _{topic_name}_\n"
+                    f"🎥 Videos: `{total_videos}` | 📑 PDFs: `{total_pdfs}`"
+                )
+            except Exception:
+                pass
 
-        if not topics:
-            await status_msg.edit_text("❌ **No topics found for this course.**")
-            return
+        classes = await loop.run_in_executor(THREAD_POOL, _sync_fetch_classes, topic_id, course_id)
+        if not classes:
+            continue
 
-        for t_idx, topic in enumerate(topics, 1):
-            topic_id = topic.get("topicId")
-            topic_name = topic.get("topicName", f"Topic {t_idx}")
+        for cls in classes:
+            title = cls.get("title", "Untitled").strip()
             
-            if t_idx % 2 == 0 or t_idx == len(topics):
-                try:
-                    await status_msg.edit_text(
-                        f"⏳ **Extracting:** `{batch_title}`\n"
-                        f"📁 **Topic** `{t_idx}/{len(topics)}`: _{topic_name}_\n"
-                        f"🎥 Videos: `{total_videos}` | 📑 PDFs: `{total_pdfs}`"
-                    )
-                except Exception:
-                    pass
-
-            classes = await fetch_classes(session, topic_id, course_id)
-            if not classes:
-                continue
-
-            for cls in classes:
-                title = cls.get("title", "Untitled").strip()
-                
-                # Extract MP4 recordings if available
-                mp4s = cls.get("mp4Recordings", [])
-                if mp4s:
-                    for mp4 in mp4s:
-                        quality = mp4.get("quality", "default")
-                        url = mp4.get("url", "").strip()
-                        if url:
-                            output.write(f"{title} ({quality}):{url}\n")
-                            total_videos += 1
-                else:
-                    # Fallback to HLS stream
-                    hls = cls.get("class_link", "").strip()
-                    if hls:
-                        output.write(f"{title}:{hls}\n")
+            mp4s = cls.get("mp4Recordings", [])
+            if mp4s:
+                for mp4 in mp4s:
+                    quality = mp4.get("quality", "default")
+                    url = mp4.get("url", "").strip()
+                    if url:
+                        output.write(f"{title} ({quality}):{url}\n")
                         total_videos += 1
+            else:
+                hls = cls.get("class_link", "").strip()
+                if hls:
+                    output.write(f"{title}:{hls}\n")
+                    total_videos += 1
 
-                # Extract PDFs
-                for pdf in cls.get("classPdf", []):
-                    pdf_url = pdf.get("url", "").strip()
-                    pdf_name = pdf.get("name", "PDF").strip()
-                    if pdf_url:
-                        output.write(f"{title} - {pdf_name}:{pdf_url}\n")
-                        total_pdfs += 1
+            for pdf in cls.get("classPdf", []):
+                pdf_url = pdf.get("url", "").strip()
+                pdf_name = pdf.get("name", "PDF").strip()
+                if pdf_url:
+                    output.write(f"{title} - {pdf_name}:{pdf_url}\n")
+                    total_pdfs += 1
 
-            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
 
     total_links = total_videos + total_pdfs
     if total_links == 0:
