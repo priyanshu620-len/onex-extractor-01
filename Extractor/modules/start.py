@@ -391,9 +391,13 @@ def photo():
 
 @app.on_message(filters.command("start"))  # & filters.user(SUDO_USERS))
 async def start(_, message):
-    join = await subscribe(_, message)
-    if join == 1:
-        return
+    try:
+        join = await subscribe(_, message)
+        if join == 1:
+            return
+    except Exception as e:
+        print(f"Error in subscribe bypass: {e}")
+        
     try:
         await message.reply_photo(
             photo=random.choice(script.IMG),
